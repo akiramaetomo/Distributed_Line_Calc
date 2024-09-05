@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed Line Calculator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            color: #333;
+            margin: 20px;
+        }
+        h1 {
+            text-align: center;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        .input-section {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: space-between;
+        }
+        label, input {
+            margin: 10px 0;
+        }
+        .input-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .input-row input {
+            width: 100px;
+            padding: 8px;
+        }
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            margin-right: 20px;
+        }
+        .checkbox-container input[type="checkbox"] {
+            margin-right: 5px;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+        }
+    
+        .checkbox-container label {
+            font-size: 18px;
+            cursor: pointer;
+        }
+        .output-section {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #ccc;
+        }
+        .output {
+            font-weight: bold;
+        }
+        .graph-section {
+            margin-top: 30px;
+        }
+        canvas {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Distributed Line Calculator</h1>
+    <div class="container">
+        <div class="input-section">
+            <div class="input-row">
+                <label for="frequency">Freq(Hz):</label>
+                <input type="number" id="frequency" value="20000" min="0">
+                
+                <label for="line-length">Line Length(km):</label>
+                <input type="number" id="line-length" value="1" min="0">
+            </div>
+
+            <div class="input-row">
+                <label for="load-magnitude">Load Imp Mag.(Ω):</label>
+                <input type="number" id="load-magnitude" value="1" min="0">
+                
+                <label for="load-phase">Phase(°):</label>
+                <input type="number" id="load-phase" value="0">
+            </div>
+
+            <div class="input-row">
+                <label for="r">R (Ω/km):</label>
+                <input type="text" id="r" value="31.5" min="0">
+
+                <label for="l">L (H/km):</label>
+                <input type="text" id="l" value="0.605e-3" min="0">
+
+                <label for="g">G (S/km):</label>
+                <input type="text" id="g" value="4.35E-5" min="0">
+
+                <label for="c">C (F/km):</label>
+                <input type="text" id="c" value="0.0488e-6" min="0">
+            </div>
+
+            <!-- オートスケールチェックボックスと最大インピーダンス値指定フィールド -->
+            <div class="input-row">
+                <div class="checkbox-container">
+                    <input type="checkbox" id="autoscale-checkbox" checked>
+                    <label for="autoscale-checkbox">Autoscale</label>
+                </div>
+                <label for="max-impedance">Max Impedance (Ω):</label>
+                <input type="number" id="max-impedance" value="100" min="0" disabled>
+                <p class="error-message" id="error-message">too small value!</p>
+
+            </div>
+
+
+
+        </div>
+
+        <div class="output-section">
+            <h2>Output</h2>
+            <p>Characteristic Impedance (Z₀): 
+                <span id="z0_polar"></span> (Polar),
+                <span id="z0_complex"></span> (Complex)
+            </p>
+            <p>Attenuation Constant (α): <span id="attenuation"></span></p>
+            <p>Input Impedance (Zin): <span id="zin"></span></p>
+        </div>
+
+        <div class="graph-section">
+            <canvas id="impedanceChart" width="800" height="400"></canvas>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/9.5.2/math.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        const inputs = document.querySelectorAll('input');
+        const autoscaleCheckbox = document.getElementById('autoscale-checkbox');
+        const maxImpedanceInput = document.getElementById('max-impedance');
+        const errorMessage = document.getElementById('error-message');
+
+        autoscaleCheckbox.addEventListener('change', (e) => {
+            maxImpedanceInput.disabled = e.target.checked;
+        });
+
+        // Prevent negative values by setting a minimum of 0
+        inputs.forEach(input => {
+            input.addEventListener('input', (e) => {
+                // Allow negative values only for the Load Impedance Phase field
+                if (input.id !== "load-phase" && (parseFloat(e.target.value) < 0 || isNaN(parseFloat(e.target.value)))) {
+                    e.target.value = 0;
+                }
+            });
+        });
+        
+
+
+        const ctx = document.getElementById('impedanceChart').getContext('2d');
+        let impedanceChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Input Impedance Magnitude (Ω)',
+                    data: [],
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    borderWidth: 2,
+                    fill: false
+                }]
+            },
+            options: {
+                scales: {
+                    x: {
+                        title: { display: true, text: 'Cable Length (km)' }
+                    },
+                    y: {
+                        title: { display: true, text: '|Zin|(Ω)' },
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+        function calculateAndUpdateGraph() {
+            const frequency = parseFloat(document.getElementById("frequency").value) || 0;
+            const R = parseFloat(document.getElementById("r").value) || 0;
+            const L = parseFloat(document.getElementById("l").value) || 0;
+            const G = parseFloat(document.getElementById("g").value) || 0;
+            const C = parseFloat(document.getElementById("c").value) || 0;
+            const lineLength = parseFloat(document.getElementById("line-length").value) || 0;
+            const loadMagnitude = parseFloat(document.getElementById("load-magnitude").value) || 0;
+            const loadPhase = parseFloat(document.getElementById("load-phase").value) || 0;
+
+            const omega = 2 * Math.PI * frequency;
+            const j = math.complex(0, 1);
+
+            const Z = math.complex(R, omega * L);
+            const Y = math.complex(G, omega * C);
+            const Z0 = math.sqrt(math.divide(Z, Y));
+            const gamma = math.sqrt(math.multiply(Z, Y));
+
+            const loadImpedance = math.complex(
+                loadMagnitude * Math.cos(loadPhase * Math.PI / 180), 
+                loadMagnitude * Math.sin(loadPhase * Math.PI / 180)
+            );
+
+            // Display Z₀ in both polar and complex forms
+            const Z0Magnitude = math.abs(Z0);
+            const Z0Phase = math.arg(Z0) * 180 / Math.PI;
+            document.getElementById("z0_polar").innerText = `${Z0Magnitude.toFixed(2)} ∠ ${Z0Phase.toFixed(2)}°`;
+            document.getElementById("z0_complex").innerText = `${Z0.toString()}`;
+
+            // Output Attenuation Constant (α)
+            document.getElementById("attenuation").innerText = math.format(math.re(gamma), {notation: 'fixed'}) + ' Np/km';
+
+            const lengths = [];
+            const magnitudes = [];
+
+            // If line length is zero, set a very small value to avoid calculation issues
+            if (lineLength === 0) {
+                lineLength = 1e-50;
+            }
+
+
+
+            for (let length = 0; length <= lineLength; length += lineLength / 100) {
+                // Corrected Zin calculation with Z0 multiplication
+                const Zin = math.multiply(Z0, math.divide(
+                    math.add(loadImpedance, math.multiply(Z0, math.tanh(math.multiply(gamma, length)))),
+                    math.add(Z0, math.multiply(loadImpedance, math.tanh(math.multiply(gamma, length))))
+                ));
+                lengths.push(length);
+                magnitudes.push(math.abs(Zin));
+
+                // Output Input Impedance (Zin) for the last length
+                if (length === lineLength) {
+                    document.getElementById("zin").innerText = math.format(Zin, {notation: 'fixed'});
+                }
+            }
+
+            // If maxImpedanceInput is zero, set a very small value to avoid calculation issues
+            const maxImpedanceValue = parseFloat(maxImpedanceInput.value);
+
+            // 入力値が 0 以下の場合、1e-50 を設定し、エラーメッセージを表示
+            let maxImpedance;
+            if (maxImpedanceValue <= 0 || isNaN(maxImpedanceValue)) {
+                maxImpedance = 1e-50; // 強制的に 1e-50 に設定
+                errorMessage.style.display = 'block'; // エラーメッセージを表示
+            } else {
+                maxImpedance = maxImpedanceValue;
+                errorMessage.style.display = 'none'; // エラーメッセージを非表示
+            }
+            
+            // ここで maxImpedance を使って計算を続行
+            if (!autoscaleCheckbox.checked) {
+                impedanceChart.options.scales.y.max = maxImpedance; 
+            } else {
+                impedanceChart.options.scales.y.max = null; // オートスケール
+            }
+
+
+            impedanceChart.data.labels = lengths;
+            impedanceChart.data.datasets[0].data = magnitudes;
+            impedanceChart.update();
+        }
+
+        inputs.forEach(input => {
+            input.addEventListener('change', calculateAndUpdateGraph);
+            input.addEventListener('input', calculateAndUpdateGraph);
+        });
+
+        window.onload = calculateAndUpdateGraph;
+    </script>
+</body>
+</html>
